@@ -21,7 +21,7 @@ Everything here is built to make you feel like you're actually sitting in front 
 ├── fonts/         – bundled `VCROSDMono` font that emulates the GRID notebook typography.
 ├── js/
 │   ├── grid.js       – creates the animated perspective grid seen on the landing page.
-│   ├── canvasGrid.js – renders the fine CRT scanline/pixel overlay across all screens.
+│   ├── canvasgrid.js – renders the fine CRT scanline/pixel overlay across all screens.
 │   ├── script.js     – manages weapon system logic, gauges, and interactive UI for the dashboard.
 │   └── tooltip.js    – dynamic global tooltip handler for immersive military jargon briefing.
 ├── sounds/        – `.opus` clips for button clicks, warnings, and ambience.
