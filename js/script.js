@@ -1,438 +1,460 @@
-// Add this at the top of your script, after other variable declarations
-let buttonClickSound = new Audio('sounds/buttonclick.opus');
-let criticalWarningSound = new Audio('sounds/bip.opus');
-let currentSpectralProfile = "BIO"; // Default value, assuming BIO is the default
+/**
+ * JEDI - Weapons Control System
+ * Main script for the weapon system control interface
+ */
 
-// Modify the existing click handler to play sound
-document.querySelectorAll('.control-option').forEach(option => {
-  option.addEventListener('click', function() {
-    // Play button click sound
-    buttonClickSound.currentTime = 0; // Reset to start to allow rapid clicking
-    buttonClickSound.play().catch(error => {
-      console.warn('Error playing button click sound:', error);
+// =============================================
+// Constants & global configuration
+// =============================================
+const CONFIG = {
+  DEFAULT_ROUNDS: 500,
+  DEFAULT_TIME: 33.33,
+  DEFAULT_TEMP_LEVEL: 30,
+  DEFAULT_RXM_LEVEL: 0,
+  DEFAULT_SPECTRAL_PROFILE: "INERT",
+  LOW_AMMO_THRESHOLD: 100,
+  GAUGE_UPDATE_INTERVAL: 500, // ms
+  TEST_SEQUENCE_DURATION: 3000, // ms
+  TEST_COMPLETE_DISPLAY_TIME: 1000, // ms
+};
+
+// =============================================
+// Audio management
+// =============================================
+class AudioManager {
+  constructor() {
+    this.soundConfig = {
+      buttonClick: 'sounds/buttonclick.opus',
+      criticalWarning: 'sounds/bip.opus',
+      gameOver: 'sounds/gameover.opus',
+    };
+    this.sounds = {};
+  }
+
+  _getSound(soundName) {
+    if (this.sounds[soundName]) {
+      return this.sounds[soundName];
+    }
+    const src = this.soundConfig[soundName];
+    if (!src) return null;
+    const audio = new Audio(src);
+    audio.preload = 'auto';
+    this.sounds[soundName] = audio;
+    return audio;
+  }
+
+  playSound(soundName, options = {}) {
+    const sound = this._getSound(soundName);
+    if (!sound) {
+      console.warn(`Sound '${soundName}' not found`);
+      return;
+    }
+    sound.pause();
+    sound.currentTime = 0;
+    if (options.loop !== undefined) sound.loop = options.loop;
+    if (options.volume !== undefined) sound.volume = options.volume;
+    sound.play().catch(error => {
+      console.warn(`Error playing '${soundName}' sound:`, error);
     });
+  }
 
-    // Deselect all options in the same group
-    const optionsGroup = this.parentElement;
-    optionsGroup.querySelectorAll('.control-option').forEach(opt => {
+  stopSound(soundName) {
+    const sound = this.sounds[soundName];
+    if (!sound) return;
+    sound.pause();
+    sound.currentTime = 0;
+    sound.loop = false;
+  }
+}
+
+// =============================================
+// User interface management
+// =============================================
+class UIManager {
+  constructor() {
+    this.elements = {
+      roundsValue: document.getElementById('rounds-value'),
+      timeValue: document.getElementById('time-value'),
+      tempGauge: document.getElementById('temp-gauge'),
+      rxmGauge: document.getElementById('rxm-gauge'),
+      radarScan: document.querySelector('.radar-scan'),
+      criticalWarning: document.getElementById('critical-warning'),
+      criticalText: document.getElementById('critical-text'),
+      weaponStatusOptions: document.querySelectorAll('#weapon-status-options .control-option'),
+      iffStatusOptions: document.querySelectorAll('#iff-status-options .control-option'),
+      targetProfileOptions: document.querySelectorAll('#target-profile-options .control-option'),
+      targetSelectOptions: document.querySelectorAll('#target-select-options .control-option'),
+      spectralProfileOptions: document.querySelectorAll('#spectral-profile-options .control-option'),
+    };
+    Object.entries(this.elements).forEach(([key, el]) => {
+      if (!el) {
+        console.warn(`Missing UI element: ${key}`);
+      }
+    });
+  }
+
+  getSelectedOption(groupId) {
+    const selector = `#${groupId}-options .selected`;
+    const element = document.querySelector(selector);
+    return element ? element.getAttribute('data-value') : null;
+  }
+
+  selectOption(groupId, value) {
+    document.querySelectorAll(`#${groupId}-options .control-option`).forEach(opt => {
       opt.classList.remove('selected');
     });
-    
-    // Select the clicked option
-    this.classList.add('selected');
-    
-    // Check if TEST mode was selected
-    if (this.getAttribute('data-value') === 'TEST' && 
-        optionsGroup.id === 'iff-status-options') {
-      runTestSequence();
-    } else if (optionsGroup.id === 'target-select-options') {
-      // Handle scan line color change based on target select
-      updateScanLineColor(this.getAttribute('data-value'));
+    const target = document.querySelector(`#${groupId}-options [data-value="${value}"]`);
+    if (target) {
+      target.classList.add('selected');
+      return true;
+    }
+    return false;
+  }
+
+  updateGauges(tempLevel, rxmLevel) {
+    if (this.elements.tempGauge) this.elements.tempGauge.style.height = `${tempLevel}%`;
+    if (this.elements.rxmGauge) this.elements.rxmGauge.style.height = `${rxmLevel}%`;
+  }
+
+  updateDisplayValues(rounds, time) {
+    if (this.elements.roundsValue) this.elements.roundsValue.textContent = rounds;
+    if (this.elements.timeValue) this.elements.timeValue.textContent = this.formatTime(time);
+  }
+
+  updateScanLineColor(targetSelect, spectralProfile) {
+    const radar = this.elements.radarScan;
+    if (!radar) return;
+    if (spectralProfile === "INERT") {
+      radar.style.display = 'none';
+      return;
+    }
+    radar.style.display = 'block';
+    const colors = {
+      "INFRA RED": 'rgba(255, 0, 0, 0.3)',
+      "UV": 'rgba(138, 43, 226, 0.3)',
+      "MULTI SPEC": 'rgba(255, 255, 0, 0.3)',
+    };
+    radar.style.backgroundColor = colors[targetSelect] || colors["MULTI SPEC"];
+  }
+
+  showCriticalWarning(message = "CRITICAL") {
+    if (this.elements.criticalText) this.elements.criticalText.textContent = message;
+    if (this.elements.criticalWarning) this.elements.criticalWarning.style.display = 'block';
+  }
+
+  hideCriticalWarning() {
+    if (this.elements.criticalWarning) this.elements.criticalWarning.style.display = 'none';
+  }
+
+  setTestWarningStyle(isComplete = false) {
+    const text = this.elements.criticalText;
+    if (!text) return;
+    if (isComplete) {
+      text.textContent = "COMPLETE";
+      text.style.backgroundColor = '#ffff00';
+      text.style.color = '#000';
     } else {
-      // Otherwise simulate engagement based on selected options
-      simulateEngagement();
+      text.textContent = "TESTING";
+      text.style.backgroundColor = '';
+      text.style.color = '';
     }
-  });
-});
-
-// Update the CSS for LCD grid and scan line
-const scanLine = document.querySelector('.scan-line');
-
-// Function to update scan line color based on Target Select
-function updateScanLineColor(targetSelect) {
-  const scanLine = document.querySelector('.scan-line');
-  
-  // If current spectral profile is INERT, keep scan line hidden regardless of target select
-  if (currentSpectralProfile === "INERT") {
-    scanLine.style.display = 'none';
-    return;
   }
-  
-  // Otherwise, show scan line with appropriate color
-  scanLine.style.display = 'block';
-  
-  switch(targetSelect) {
-    case "INFRA RED":
-      scanLine.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
-      break;
-    case "UV":
-      scanLine.style.backgroundColor = 'rgba(138, 43, 226, 0.3)'; // Violet color
-      break;
-    default: // MULTI SPEC
-      scanLine.style.backgroundColor = 'rgba(255, 255, 0, 0.3)'; // Yellow (default)
-      break;
+
+  setBlinking(elements, blinking = true) {
+    elements.forEach(element => {
+      if (!element) return;
+      if (blinking) element.classList.add('blinking');
+      else element.classList.remove('blinking');
+    });
+  }
+
+  formatTime(time) {
+    const seconds = Math.floor(time);
+    const centiseconds = Math.floor((time - seconds) * 100);
+    const displaySeconds = seconds < 10 ? `0${seconds}` : `${seconds}`;
+    const displayCentiseconds = centiseconds < 10 ? `0${centiseconds}` : `${centiseconds}`;
+    return `${displaySeconds}.${displayCentiseconds}`;
   }
 }
 
+// =============================================
+// Weapon system controller
+// =============================================
+class WeaponSystem {
+  constructor(audioManager, uiManager) {
+    this.audioManager = audioManager;
+    this.ui = uiManager;
+    this.state = {
+      currentRounds: CONFIG.DEFAULT_ROUNDS,
+      currentTime: CONFIG.DEFAULT_TIME,
+      tempLevel: CONFIG.DEFAULT_TEMP_LEVEL,
+      rxmLevel: CONFIG.DEFAULT_RXM_LEVEL,
+      spectralProfile: CONFIG.DEFAULT_SPECTRAL_PROFILE,
+      targetRounds: CONFIG.DEFAULT_ROUNDS,
+      targetTime: CONFIG.DEFAULT_TIME,
+      isWarningActive: false,
+      inTestMode: false,
+      isPaused: false,
+      firingInterval: null,
+      cooldownInterval: null,
+    };
+    this._validateUI();
+    this._initializeEventListeners();
+    this._initializeUI();
+  }
 
-// Function to handle Spectral Profile selection
-function handleSpectralProfileSelection() {
-  document.querySelectorAll('#spectral-profile-options .control-option').forEach(option => {
-    option.addEventListener('click', function() {
-      // Update current spectral profile global variable
-      currentSpectralProfile = this.getAttribute('data-value');
-      
-      // Apply scan line visibility based on current spectral profile
-      const scanLine = document.querySelector('.scan-line');
-      
-      if (currentSpectralProfile === "INERT") {
-        scanLine.style.display = 'none'; // Hide scan line
-      } else if (currentSpectralProfile === "BIO") {
-        // Get current target select and update scan line
-        const currentTargetSelect = document.querySelector('#target-select-options .selected').getAttribute('data-value');
-        updateScanLineColor(currentTargetSelect);
+  _validateUI() {
+    ['roundsValue', 'timeValue', 'tempGauge', 'rxmGauge'].forEach(key => {
+      if (!this.ui.elements[key]) {
+        console.warn(`WeaponSystem missing UI reference: ${key}`);
       }
     });
-  });
-}
-
-
-// Initialize the current spectral profile on page load
-document.addEventListener('DOMContentLoaded', function() {
-  // Get the initially selected spectral profile
-  const initialSpectralProfile = document.querySelector('#spectral-profile-options .selected');
-  if (initialSpectralProfile) {
-    currentSpectralProfile = initialSpectralProfile.getAttribute('data-value');
   }
-  
-  // Initialize the spectral profile handlers
-  handleSpectralProfileSelection();
-  
-  // Initialize scan line based on current settings
-  const currentTargetSelect = document.querySelector('#target-select-options .selected').getAttribute('data-value');
-  updateScanLineColor(currentTargetSelect);
-});
 
+  _initializeEventListeners() {
+    document.querySelectorAll('.control-option').forEach(option => {
+      option.setAttribute('tabindex', '0');
+      option.setAttribute('role', 'button');
+      option.addEventListener('click', this._handleControlOptionClick.bind(this));
+      option.addEventListener('keydown', this._handleControlOptionKeydown.bind(this));
+    });
+    document.addEventListener('DOMContentLoaded', this._handleDOMContentLoaded.bind(this));
+  }
 
+  _initializeUI() {
+    this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+    this.ui.updateDisplayValues(this.state.currentRounds, this.state.currentTime);
+    const target = this.ui.getSelectedOption('target-select');
+    this.ui.updateScanLineColor(target, this.state.spectralProfile);
+  }
 
-
-// System variables
-let rounds = 500;
-let time = 33.33;
-let tempLevel = 30;
-let rxmLevel = 0;
-let firingInterval;
-let criticalWarningInterval;
-let isWarningActive = false;
-let currentRound = rounds;
-let targetRound = rounds;
-let currentTime = time;
-let targetTime = time;
-let inTestMode = false;
-let isPaused = false; // Flag for paused countdown
-
-// Function to format time as "09.09", "08.88", etc.
-function formatTime(time) {
-  let seconds = Math.floor(time); // Get the whole seconds part
-  let centiseconds = Math.floor((time - seconds) * 100); // Get the decimal part (hundredths of seconds)
-
-  // Ensure seconds are always two digits (e.g., 09 instead of 9)
-  let formattedSeconds = seconds < 10 ? '0' + seconds : seconds;
-  let formattedCentiseconds = centiseconds < 10 ? '0' + centiseconds : centiseconds;
-  
-  return `${formattedSeconds}.${formattedCentiseconds}`;
-}
-
-function runTestSequence() {
-  // Prevent multiple test sequences from running simultaneously
-  if (inTestMode) return;
-  inTestMode = true;
-  
-  // Save original values to restore after test
-  const originalRounds = document.getElementById('rounds-value').textContent;
-  const originalTime = document.getElementById('time-value').textContent;
-  const originalTempLevel = tempLevel;
-  const originalRxmLevel = rxmLevel;
-  
-  // Stop any ongoing firing or critical warning
-  if (firingInterval) clearInterval(firingInterval);
-  deactivateCriticalWarning();
-  
-  // 1. Make the rounds and time values blink
-  const roundsValue = document.getElementById('rounds-value');
-  const timeValue = document.getElementById('time-value');
-  roundsValue.classList.add('blinking');
-  timeValue.classList.add('blinking');
-  
-  // 2. Animate the gauges to max and then back
-  let gaugeAnimStep = 0;
-  const gaugeAnimInterval = setInterval(() => {
-    gaugeAnimStep++;
-    if (gaugeAnimStep <= 10) {
-      // Increasing phase
-      tempLevel = Math.min(originalTempLevel + (gaugeAnimStep * 7), 100);
-      rxmLevel = Math.min(gaugeAnimStep * 10, 100);
-    } else if (gaugeAnimStep <= 20) {
-      // Decreasing phase
-      tempLevel = Math.max(100 - ((gaugeAnimStep - 10) * 7), originalTempLevel);
-      rxmLevel = Math.max(100 - ((gaugeAnimStep - 10) * 10), originalRxmLevel);
+  _handleControlOptionClick(event) {
+    const option = event.currentTarget;
+    const value = option.getAttribute('data-value');
+    const group = option.parentElement.id.replace('-options', '');
+    this.audioManager.playSound('buttonClick');
+    option.parentElement.querySelectorAll('.control-option').forEach(opt => opt.classList.remove('selected'));
+    option.classList.add('selected');
+    switch (group) {
+      case 'iff-status':
+        if (value === 'TEST') this.runTestSequence();
+        else this.simulateEngagement();
+        break;
+      case 'spectral-profile':
+        this.state.spectralProfile = value;
+        this.ui.updateScanLineColor(this.ui.getSelectedOption('target-select'), value);
+        break;
+      case 'target-select':
+        this.ui.updateScanLineColor(value, this.state.spectralProfile);
+        break;
+      default:
+        this.simulateEngagement();
     }
-    updateGauges();
-  }, 150);
-  
-  // 3. Show TESTING message in critical warning box
-  const criticalWarning = document.getElementById('critical-warning');
-  const criticalText = document.getElementById('critical-text');
-  criticalText.textContent = "TESTING";
-  criticalWarning.style.display = 'block';
-  
-  // After 3 seconds, complete the test
-  setTimeout(() => {
-    // Stop the blinking and animations
-    clearInterval(gaugeAnimInterval);
-    
-    // Show COMPLETE message for 1 second
-    criticalText.textContent = "COMPLETE";
-    criticalText.style.backgroundColor = '#ffff00';
-    criticalText.style.color = '#000';
-    
-    // After 1 second, hide the warning and reset everything
+  }
+
+  _handleControlOptionKeydown(event) {
+    const { key } = event;
+    if (key === 'Enter' || key === ' ') {
+      event.preventDefault();
+      this._handleControlOptionClick(event);
+    } else if (key === 'ArrowRight' || key === 'ArrowDown') {
+      event.preventDefault();
+      this._moveOptionFocus(event.currentTarget, 'next');
+    } else if (key === 'ArrowLeft' || key === 'ArrowUp') {
+      event.preventDefault();
+      this._moveOptionFocus(event.currentTarget, 'prev');
+    }
+  }
+
+  _moveOptionFocus(option, direction) {
+    const options = Array.from(option.parentElement.querySelectorAll('.control-option'));
+    if (!options.length) return;
+    const currentIndex = options.indexOf(option);
+    if (currentIndex === -1) return;
+    const delta = direction === 'next' ? 1 : -1;
+    const nextIndex = (currentIndex + delta + options.length) % options.length;
+    options[nextIndex].focus();
+  }
+
+  _handleDOMContentLoaded() {
+    const initialProfile = document.querySelector('#spectral-profile-options .selected');
+    if (initialProfile) {
+      this.state.spectralProfile = initialProfile.getAttribute('data-value');
+    }
+    this.ui.updateScanLineColor(this.ui.getSelectedOption('target-select'), this.state.spectralProfile);
+  }
+
+  runTestSequence() {
+    if (this.state.inTestMode) return;
+    this.state.inTestMode = true;
+    const originalRounds = this.ui.elements.roundsValue?.textContent;
+    const originalTime = this.ui.elements.timeValue?.textContent;
+    const originalTemp = this.state.tempLevel;
+    const originalRxm = this.state.rxmLevel;
+    this.stopFiring();
+    this.state.isWarningActive = false;
+    this.ui.setBlinking([this.ui.elements.roundsValue, this.ui.elements.timeValue], true);
+    let step = 0;
+    const interval = setInterval(() => {
+      step++;
+      if (step <= 10) {
+        this.state.tempLevel = Math.min(originalTemp + step * 7, 100);
+        this.state.rxmLevel = Math.min(step * 10, 100);
+      } else if (step <= 20) {
+        this.state.tempLevel = Math.max(100 - (step - 10) * 7, originalTemp);
+        this.state.rxmLevel = Math.max(100 - (step - 10) * 10, originalRxm);
+      }
+      this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+      if (step >= 20) {
+        clearInterval(interval);
+      }
+    }, 150);
+    this.ui.showCriticalWarning("TESTING");
     setTimeout(() => {
-      criticalWarning.style.display = 'none';
-      roundsValue.classList.remove('blinking');
-      timeValue.classList.remove('blinking');
-      
-      // Restore original values
-      roundsValue.textContent = originalRounds;
-      timeValue.textContent = originalTime;
-      tempLevel = originalTempLevel;
-      rxmLevel = originalRxmLevel;
-      updateGauges();
-      
-      // Fix: Reset IFF status to SEARCH properly by first removing the 'selected' 
-      // class from ALL options including TEST before adding it to SEARCH
-      document.querySelectorAll('#iff-status-options .control-option').forEach(opt => {
-        opt.classList.remove('selected');
-      });
-      document.querySelector('#iff-status-options [data-value="SEARCH"]').classList.add('selected');
-      
-      inTestMode = false;
-    }, 1000);
-  }, 3000);
-}
+      clearInterval(interval);
+      this.ui.setTestWarningStyle(true);
+      setTimeout(() => {
+        this.ui.hideCriticalWarning();
+        this.ui.setBlinking([this.ui.elements.roundsValue, this.ui.elements.timeValue], false);
+        if (this.ui.elements.roundsValue && originalRounds) {
+          this.ui.elements.roundsValue.textContent = originalRounds;
+        }
+        if (this.ui.elements.timeValue && originalTime) {
+          this.ui.elements.timeValue.textContent = originalTime;
+        }
+        this.state.tempLevel = originalTemp;
+        this.state.rxmLevel = originalRxm;
+        this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+        this.ui.setTestWarningStyle(false);
+        this.ui.selectOption('iff-status', 'SEARCH');
+        this.state.inTestMode = false;
+      }, CONFIG.TEST_COMPLETE_DISPLAY_TIME);
+    }, CONFIG.TEST_SEQUENCE_DURATION);
+  }
 
-function getFireRate() {
-  const targetProfile = document.querySelector('#target-profile-options .selected').getAttribute('data-value');
-  
-  switch(targetProfile) {
-    case "SOFT":
-      // Single shot with a noticeable delay between rounds
-      return { 
-        fireInterval: 500, // 0.5 seconds per shot
-        burstSize: 1,
-        pauseAfterBurst: 0
-      };
-    case "STANDARD":
-      // Burst of three shots followed by a pause
-      return {
-        fireInterval: 100, // 0.1 seconds between shots in the burst
-        burstSize: 3,
-        pauseAfterBurst: 200 // 0.2 seconds pause after each burst
-      };
-    case "HARD":
-      // Continuous full auto mode
-      return {
-        fireInterval: 50, // Fastest firing rate
-        burstSize: Infinity, // No limit to burst size; continuous firing
-        pauseAfterBurst: 0
-      };
-    default:
-      // Default behavior if none match
-      return { 
-        fireInterval: 300,
-        burstSize: 1,
-        pauseAfterBurst: 0
-      };
+  simulateEngagement() {
+    const weaponStatus = this.ui.getSelectedOption('weapon-status');
+    const iffStatus = this.ui.getSelectedOption('iff-status');
+    if (weaponStatus === "ARMED" && iffStatus === "ENGAGED") {
+      this.state.tempLevel = 60;
+      this.state.isPaused = false;
+      this.startFiring();
+    } else if (weaponStatus === "SAFE") {
+      this.stopFiring();
+      this.state.isPaused = true;
+      this.ui.selectOption('iff-status', 'SEARCH');
+      this.state.rxmLevel = 0;
+      this.state.tempLevel = 30;
+      this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+    } else {
+      this.stopFiring();
+      this.state.isPaused = true;
+      this.state.rxmLevel = 0;
+      this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+    }
+    if (this.state.firingInterval && !this.state.isPaused) {
+      clearInterval(this.state.firingInterval);
+      this.startFiring();
+    }
   }
-}
 
-// Simulate an engagement scenario
-function simulateEngagement() {
-  const weaponStatus = document.querySelector('#weapon-status-options .selected').getAttribute('data-value');
-  const iffStatus = document.querySelector('#iff-status-options .selected').getAttribute('data-value');
-  
-  // Update state based on weapon status and IFF status
-  if (weaponStatus === "ARMED" && iffStatus === "ENGAGED") {
-    tempLevel = 60;
-    updateGauges();
-    
-    // Resume or start firing
-    isPaused = false;
-    startFiring();
-  } else if (weaponStatus === "SAFE") {
-    // Pause firing if SAFE is selected
-    stopFiring();
-    isPaused = true;
-    
-    // Reset IFF status to SEARCH when SAFE is selected
-    document.querySelectorAll('#iff-status-options .control-option').forEach(opt => {
-      opt.classList.remove('selected');
-    });
-    document.querySelector('#iff-status-options [data-value="SEARCH"]').classList.add('selected');
-    
-    rxmLevel = 0;
-    tempLevel = 30;
-    updateGauges();
-  } else {
-    // If weapon is ARMED but not ENGAGED
-    stopFiring();
-    isPaused = true;
-    
-    rxmLevel = 0;
-    updateGauges();
+  getFireRate() {
+    const profile = this.ui.getSelectedOption('target-profile');
+    switch (profile) {
+      case "SOFT":
+        return { fireInterval: 500, burstSize: 1, pauseAfterBurst: 0 };
+      case "STANDARD":
+        return { fireInterval: 100, burstSize: 3, pauseAfterBurst: 200 };
+      case "HARD":
+        return { fireInterval: 50, burstSize: Infinity, pauseAfterBurst: 0 };
+      default:
+        return { fireInterval: 300, burstSize: 1, pauseAfterBurst: 0 };
+    }
   }
-  
-  // Update firing rate if necessary
-  if (firingInterval && !isPaused) {
-    clearInterval(firingInterval);
-    startFiring();
-  }
-}
 
-function startFiring() {
-  if (firingInterval) clearInterval(firingInterval);
-  
-  // Set target values for countdown
-  if (!isPaused) {
-    targetRound = 0;
-    targetTime = 0;
-  }
-  
-  // Get the fire rate parameters based on Target Profile
-  const fireParams = getFireRate();
-  let shotCounter = 0;
-  
-  firingInterval = setInterval(() => {
-    if (!isPaused && currentRound > targetRound) {
-      currentRound--;
-      currentTime = (33.33 * currentRound) / 500;
-      
-      // Update displayed values
-      document.getElementById('rounds-value').textContent = currentRound;
-      document.getElementById('time-value').textContent = formatTime(currentTime);
-      
-      // Gradually increase rxmLevel and tempLevel
-      rxmLevel = Math.min(rxmLevel + 1, 100);
-      tempLevel = Math.min(tempLevel + 0.5, 90);
-      updateGauges();
-      
-      // Check if CRITICAL warning should be shown
-      checkCriticalStatus();
-      
-      // Increment shot counter
-      shotCounter++;
-      
-      // If burst size is reached, pause before next shots
-      if (shotCounter >= fireParams.burstSize && fireParams.pauseAfterBurst > 0) {
-        clearInterval(firingInterval);
-        setTimeout(() => {
-          startFiring();
-        }, fireParams.pauseAfterBurst);
-        shotCounter = 0;
+  startFiring() {
+    if (this.state.firingInterval) clearInterval(this.state.firingInterval);
+    if (!this.state.isPaused) {
+      this.state.targetRounds = 0;
+      this.state.targetTime = 0;
+    }
+    const rate = this.getFireRate();
+    let shotCounter = 0;
+    this.state.firingInterval = setInterval(() => {
+      if (!this.state.isPaused && this.state.currentRounds > 0) {
+        this.state.currentRounds--;
+        this.state.currentTime = (CONFIG.DEFAULT_TIME * this.state.currentRounds) / CONFIG.DEFAULT_ROUNDS;
+        this.ui.updateDisplayValues(this.state.currentRounds, this.state.currentTime);
+        this.state.rxmLevel = Math.min(this.state.rxmLevel + 1, 100);
+        this.state.tempLevel = Math.min(this.state.tempLevel + 0.5, 90);
+        this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+        this.checkCriticalStatus();
+        shotCounter++;
+        if (shotCounter >= rate.burstSize && rate.pauseAfterBurst > 0) {
+          clearInterval(this.state.firingInterval);
+          setTimeout(() => this.startFiring(), rate.pauseAfterBurst);
+          shotCounter = 0;
+        }
       }
-    }
-    
-    if (currentRound <= 0) {
-      currentRound = 0;
-      document.getElementById('rounds-value').textContent = "0";
-      document.getElementById('time-value').textContent = formatTime(0);
-      stopFiring();
-      
-      // Set weapon status to SAFE
-      document.querySelectorAll('#weapon-status-options .control-option').forEach(opt => {
-        opt.classList.remove('selected');
-      });
-      document.querySelector('#weapon-status-options [data-value="SAFE"]').classList.add('selected');
-      
-      // Reset IFF status to SEARCH
-      document.querySelectorAll('#iff-status-options .control-option').forEach(opt => {
-        opt.classList.remove('selected');
-      });
-      document.querySelector('#iff-status-options [data-value="SEARCH"]').classList.add('selected');
-    }
-  }, fireParams.fireInterval);
-}
+      if (this.state.currentRounds <= 0) {
+        this.state.currentRounds = 0;
+        this.ui.updateDisplayValues(0, 0);
+        this.stopFiring();
+        this.ui.selectOption('weapon-status', 'SAFE');
+        this.ui.selectOption('iff-status', 'SEARCH');
+      }
+    }, rate.fireInterval);
+  }
 
-function stopFiring() {
-  if (firingInterval) clearInterval(firingInterval);
-  
-  let cooldownInterval = setInterval(() => {
-    tempLevel = Math.max(tempLevel - 5, 30);
-    rxmLevel = Math.max(rxmLevel - 10, 0);
-    updateGauges();
-    
-    if (tempLevel <= 30 && rxmLevel <= 0) {
-      clearInterval(cooldownInterval);
+  stopFiring() {
+    if (this.state.firingInterval) clearInterval(this.state.firingInterval);
+    if (this.state.cooldownInterval) clearInterval(this.state.cooldownInterval);
+    this.state.cooldownInterval = setInterval(() => {
+      this.state.tempLevel = Math.max(this.state.tempLevel - 5, 30);
+      this.state.rxmLevel = Math.max(this.state.rxmLevel - 10, 0);
+      this.ui.updateGauges(this.state.tempLevel, this.state.rxmLevel);
+      if (this.state.tempLevel <= 30 && this.state.rxmLevel <= 0) {
+        clearInterval(this.state.cooldownInterval);
+        this.state.cooldownInterval = null;
+      }
+    }, CONFIG.GAUGE_UPDATE_INTERVAL);
+    if (this.state.currentRounds <= 0) {
+      this.deactivateCriticalWarning();
+      this.audioManager.playSound('gameOver');
     }
-  }, 500);
-  
-  // Deactivate warning if zero rounds
-  if (currentRound <= 0) {
-    deactivateCriticalWarning();
+  }
+
+  checkCriticalStatus() {
+    if (this.state.currentRounds <= CONFIG.LOW_AMMO_THRESHOLD && this.state.currentRounds > 0) {
+      this.activateCriticalWarning();
+    } else if (this.state.currentRounds <= 0) {
+      this.deactivateCriticalWarning();
+    }
+  }
+
+  activateCriticalWarning() {
+    if (this.state.isWarningActive) return;
+    this.state.isWarningActive = true;
+    this.audioManager.playSound('criticalWarning', { loop: true });
+    this.ui.showCriticalWarning();
+  }
+
+  deactivateCriticalWarning() {
+    if (!this.state.isWarningActive) return;
+    this.state.isWarningActive = false;
+    this.audioManager.stopSound('criticalWarning');
+    this.ui.hideCriticalWarning();
   }
 }
 
-function updateGauges() {
-  document.getElementById('temp-gauge').style.height = tempLevel + '%';
-  document.getElementById('rxm-gauge').style.height = rxmLevel + '%';
-}
-
-// Function to check critical status
-function checkCriticalStatus() {
-  if (currentRound <= 100 && currentRound > 0) {
-    activateCriticalWarning();
-  } else if (currentRound <= 0) {
-    deactivateCriticalWarning();
-  }
-}
-
-// Activate CRITICAL warning
-function activateCriticalWarning() {
-  const warningBox = document.getElementById('critical-warning');
-  const criticalText = document.getElementById('critical-text');
-  
-  if (isWarningActive) return;
-  isWarningActive = true;
-  
-  // Play critical warning sound in loop
-  criticalWarningSound.currentTime = 0;
-  criticalWarningSound.loop = true;  // Imposta il loop
-  criticalWarningSound.play().catch(error => {
-  console.warn('Error playing critical warning sound:', error);
-});
-  
-  
-  
-  // Set initial text to "CRITICAL"
-  criticalText.textContent = "CRITICAL";
-  warningBox.style.display = 'block';
-}
-
-// Deactivate CRITICAL warning
-function deactivateCriticalWarning() {
-  document.getElementById('critical-warning').style.display = 'none';
-  isWarningActive = false;
-  
-  criticalWarningSound.loop = false; // Disattiva il loop
-  criticalWarningSound.pause();  // Ferma il suono
-  criticalWarningSound.currentTime = 0; // Resetta il suono se necessario
-  
-}
-
-
-
-
-// Initialize scan line color based on default target select
-updateScanLineColor(document.querySelector('#target-select-options .selected').getAttribute('data-value'));
-
-// Add audio elements to HTML if they don't exist
-document.addEventListener('DOMContentLoaded', function() {
-  // Add the critical warning sound if it doesn't exist
-  if (!document.getElementById('critical-warning-sound')) {
-    const criticalSoundElement = document.createElement('audio');
-    criticalSoundElement.id = 'critical-warning-sound';
-    criticalSoundElement.src = 'sounds/bip.opus';
-    criticalSoundElement.preload = 'auto';
-    document.body.appendChild(criticalSoundElement);
-  }
+// =============================================
+// Application initialization
+// =============================================
+document.addEventListener('DOMContentLoaded', () => {
+  const audioManager = new AudioManager();
+  const uiManager = new UIManager();
+  const weaponSystem = new WeaponSystem(audioManager, uiManager);
+  window.audioManager = audioManager;
+  window.uiManager = uiManager;
+  window.weaponSystem = weaponSystem;
 });
